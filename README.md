@@ -1,5 +1,9 @@
 # Pilot Protocol — Swift SDK
 
+[![ci](https://github.com/pilot-protocol/sdk-swift/actions/workflows/ci.yml/badge.svg)](https://github.com/pilot-protocol/sdk-swift/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/pilot-protocol/sdk-swift/branch/main/graph/badge.svg)](https://codecov.io/gh/pilot-protocol/sdk-swift)
+[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
+
 End-to-end-encrypted peer-to-peer messaging for iOS and macOS apps, built on the [Pilot Protocol](https://pilotprotocol.network) overlay network.
 
 The SDK ships an embedded `pilot-daemon` compiled to a static library inside an `XCFramework`. Your app links against it, calls a Swift API, and gets a real Pilot node — no separate process, no system-wide socket. Single-process, sandbox-clean.
@@ -111,4 +115,4 @@ A full peer-to-peer orchestration recipe lives in `Examples/pilot-smoke-swift/`.
 
 ## License
 
-AGPL-3.0-or-later.
+AGPL-3.0-or-later. See [LICENSE](LICENSE).

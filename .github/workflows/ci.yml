@@ -35,6 +35,15 @@ jobs:
               .build/debug/*.xctest/Contents/MacOS/* > coverage.lcov 2>/dev/null || true
           fi
 
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        if: always()
+        with:
+          files: coverage.lcov
+          flags: unittests
+          name: sdk-swift
+          fail_ci_if_error: false
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:
