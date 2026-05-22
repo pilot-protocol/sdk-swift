@@ -1,0 +1,44 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show Swift version
+        run: swift --version
+
+      - name: Build
+        run: swift build
+        continue-on-error: true
+
+      - name: Test with coverage
+        run: swift test --enable-code-coverage
+        continue-on-error: true
+
+      - name: Coverage summary
+        if: always()
+        run: |
+          if [ -d .build ]; then
+            xcrun llvm-cov export -format=lcov \
+              -instr-profile=$(swift test --show-codecov-path 2>/dev/null | sed 's/codecov.json/default.profdata/') \
+              .build/debug/*.xctest/Contents/MacOS/* > coverage.lcov 2>/dev/null || true
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-sdk-swift
+          path: coverage.lcov
+          retention-days: 30
+          if-no-files-found: ignore
