@@ -20,7 +20,8 @@ let package = Package(
         ),
         .binaryTarget(
             name: "PilotC",
-            path: "Frameworks/Pilot.xcframework"
+            url: "https://github.com/pilot-protocol/sdk-swift/releases/download/v0.2.0/Pilot.xcframework.zip",
+            checksum: "a59c9b99061d1078cc6f5e7ae1261af90144e2177cdb1b932fbcf3979578a25e"
         ),
     ]
 )
