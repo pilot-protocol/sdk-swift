@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build Pilot.xcframework from sdk/cgo.
+# Build Pilot.xcframework from the libpilot Go bindings package.
 #
 # Produces three slices in $OUT, then bundles them via
 # xcodebuild -create-xcframework:
@@ -11,14 +11,50 @@
 # Intel simulator (x86_64) is skipped; add an extra clang line if you
 # need it. Re-run is idempotent: the script deletes $OUT/Pilot.xcframework
 # before recreating it.
+#
+# Source location:
+#   LIBPILOT_REPO env var (highest precedence) → must point at a
+#     pilot-protocol/libpilot checkout containing go.mod + bindings.go.
+#   ../libpilot relative to this clone (default — works when both
+#     sdk-swift and libpilot are cloned as siblings under the
+#     pilot-protocol org folder).
+#
+# Releases are normally pre-built and attached to the GitHub Release
+# (Pilot.xcframework.zip on each tag); this script is for local dev
+# when you're iterating on the cgo bindings and want a fresh slice.
 
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
-OUT="$REPO_ROOT/sdk/swift/Frameworks"
+THIS_DIR="$(cd "$(dirname "$0")" && pwd)"
+SWIFT_DIR="$(cd "$THIS_DIR/.." && pwd)"
+OUT="$SWIFT_DIR/Frameworks"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
+# Resolve LIBPILOT_REPO. Order of precedence:
+#   1. $LIBPILOT_REPO env var
+#   2. ../libpilot sibling to this clone
+if [ -z "${LIBPILOT_REPO:-}" ]; then
+    candidate="$SWIFT_DIR/../libpilot"
+    if [ -d "$candidate" ] && [ -f "$candidate/go.mod" ]; then
+        LIBPILOT_REPO="$candidate"
+    fi
+fi
+if [ -z "${LIBPILOT_REPO:-}" ] || [ ! -f "$LIBPILOT_REPO/go.mod" ]; then
+    cat >&2 <<EOF
+ERROR: cannot find libpilot Go source.
+Set LIBPILOT_REPO to point at a clone of pilot-protocol/libpilot.
+
+    export LIBPILOT_REPO=/path/to/libpilot
+    $0
+
+Or clone libpilot as a sibling of sdk-swift:
+    git clone git@github.com:pilot-protocol/libpilot.git $SWIFT_DIR/../libpilot
+EOF
+    exit 1
+fi
+
+echo ">>> using LIBPILOT_REPO=$LIBPILOT_REPO"
 mkdir -p "$OUT"
 rm -rf "$OUT/Pilot.xcframework"
 
@@ -33,12 +69,12 @@ build_slice() {
 
     echo ">>> building $label ($sdk / $goarch)"
     CGO_ENABLED=1 GOOS=ios GOARCH=arm64 CC="$cc" \
-        go build -C "$REPO_ROOT" \
+        go build -C "$LIBPILOT_REPO" \
         -buildmode=c-archive \
         -tags ios \
         -ldflags="-s -w" \
         -o "$out_dir/libPilot.a" \
-        ./sdk/cgo
+        .
 
     # The generated header sits next to the .a; rename to pilot.h and
     # write a module.modulemap so Swift can import it as "PilotC".
@@ -68,11 +104,11 @@ mkdir -p "$WORK/macos-arm64/Headers"
 SDK_MAC="$(xcrun --sdk macosx --show-sdk-path)"
 CC_MAC="$(xcrun --sdk macosx --find clang) -isysroot $SDK_MAC -arch arm64"
 CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 CC="$CC_MAC" \
-    go build -C "$REPO_ROOT" \
+    go build -C "$LIBPILOT_REPO" \
     -buildmode=c-archive \
     -ldflags="-s -w" \
     -o "$WORK/macos-arm64/libPilot.a" \
-    ./sdk/cgo
+    .
 mv "$WORK/macos-arm64/libPilot.h" "$WORK/macos-arm64/Headers/pilot.h"
 cat > "$WORK/macos-arm64/Headers/module.modulemap" <<'EOF'
 module PilotC {
