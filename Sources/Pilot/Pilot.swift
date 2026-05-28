@@ -192,12 +192,16 @@ public final class Pilot {
     public func receive() throws -> Datagram {
         let resp = try rpc(PilotRecvFrom(driverHandle))
         guard
-            let src   = resp["src_addr"] as? String,
-            let sport = (resp["src_port"] as? NSNumber)?.uint16Value,
-            let dport = (resp["dst_port"] as? NSNumber)?.uint16Value
+            let src      = resp["src_addr"] as? String,
+            let sportNum = resp["src_port"] as? NSNumber,
+            let dportNum = resp["dst_port"] as? NSNumber,
+            sportNum.uint16Value == sportNum.uint64Value,
+            dportNum.uint16Value == dportNum.uint64Value
         else {
             throw Error.invalidResponse("recv: \(resp)")
         }
+        let sport = sportNum.uint16Value
+        let dport = dportNum.uint16Value
         // Go's encoding/json renders []byte as base64.
         let data: Data
         if let b64 = resp["data"] as? String, let d = Data(base64Encoded: b64) {
