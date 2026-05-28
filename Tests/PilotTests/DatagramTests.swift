@@ -70,3 +70,27 @@ final class DatagramTests: XCTestCase {
         XCTAssertEqual(d, Data([0xDE, 0xAD, 0xBE, 0xEF]))
     }
 }
+
+    // MARK: - Port truncation validation (PILOT-119)
+
+    func testPortTruncationDetection() {
+        // uint16Value truncates values > 65535 silently.
+        // A value of 70000 truncates to 4464 (70000 - 65536).
+        // The receive() path must reject such values.
+        let n70000 = NSNumber(value: 70000)
+        XCTAssertNotEqual(n70000.uint16Value, n70000.uint64Value,
+                          "70000 should be detected as truncated")
+
+        let n65535 = NSNumber(value: 65535)
+        XCTAssertEqual(n65535.uint16Value, n65535.uint64Value,
+                       "65535 is max valid port, should not truncate")
+
+        let n0 = NSNumber(value: 0)
+        XCTAssertEqual(n0.uint16Value, n0.uint64Value,
+                       "port 0 is valid, should not truncate")
+
+        let nNegative = NSNumber(value: -1)
+        // intValue == -1, uint64Value would wrap around for negative
+        XCTAssertNotEqual(Int64(nNegative.intValue), Int64(bitPattern: nNegative.uint64Value),
+                          "negative values should be distinguishable from valid ports")
+    }
