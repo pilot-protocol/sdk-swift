@@ -169,6 +169,7 @@ public final class Pilot {
     }
 
     public func send(to peerAddr: String, port: UInt16, data: Data) throws {
+        guard !data.isEmpty else { return }
         let fullAddr = "\(peerAddr):\(port)"
         try fullAddr.withCString { addrC in
             try data.withUnsafeBytes { raw in
