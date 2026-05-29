@@ -67,12 +67,14 @@ public final class Pilot {
         case startFailed(String)
         case rpcFailed(String)
         case invalidResponse(String)
+        case dataTooLarge(Int)
 
         public var description: String {
             switch self {
             case .startFailed(let m):     return "Pilot start failed: \(m)"
             case .rpcFailed(let m):       return "Pilot RPC failed: \(m)"
             case .invalidResponse(let m): return "Pilot invalid response: \(m)"
+            case .dataTooLarge(let n):    return "Pilot send: data \(n) bytes exceeds Int32.max (C ABI limit)"
             }
         }
     }
@@ -81,7 +83,17 @@ public final class Pilot {
 
     public let start: StartResult
     private let driverHandle: UInt64
-    private var stopped = false
+
+    // PILOT-118: NSLock-guard the stopped flag so concurrent stop()/deinit
+    // can't race. Stored as _stopped + a computed `stopped` property that
+    // takes/releases the lock per access. Cheaper than a serial queue
+    // since access is rare (stop path + deinit).
+    private let stoppedLock = NSLock()
+    private var _stopped = false
+    private var stopped: Bool {
+        get { stoppedLock.lock(); defer { stoppedLock.unlock() }; return _stopped }
+        set { stoppedLock.lock(); defer { stoppedLock.unlock() }; _stopped = newValue }
+    }
 
     private init(start: StartResult, driverHandle: UInt64) {
         self.start = start
@@ -170,6 +182,10 @@ public final class Pilot {
 
     public func send(to peerAddr: String, port: UInt16, data: Data) throws {
         guard !data.isEmpty else { return }
+        // PILOT-121: the C ABI PilotSendTo takes Int32 for length; if data.count
+        // exceeds Int32.max (~2.14 GB) the truncation is silent and the wire
+        // length is wrong. Guard explicitly with a typed error instead.
+        guard data.count <= Int(Int32.max) else { throw Error.dataTooLarge(data.count) }
         let fullAddr = "\(peerAddr):\(port)"
         try fullAddr.withCString { addrC in
             try data.withUnsafeBytes { raw in
