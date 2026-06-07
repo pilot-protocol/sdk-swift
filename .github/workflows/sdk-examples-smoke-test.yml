@@ -1,0 +1,54 @@
+name: SDK examples smoke test
+
+# PILOT-196: keeps the README quickstart honest. The Swift quickstart
+# uses the embedded daemon, so no external rendezvous is needed for
+# the loopback case.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '0 6 * * *'
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    name: README quickstart smoke
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract README quickstart
+        run: |
+          # PILOT-197: extract the first ```swift fenced block.
+          mkdir -p /tmp/smoke
+          awk '/^```swift$/{flag=1;next}/^```$/{flag=0}flag' README.md > /tmp/smoke/main.swift
+          if [ ! -s /tmp/smoke/main.swift ]; then
+            echo "::error::no quickstart code block found in README.md"
+            exit 1
+          fi
+
+      - name: Build SDK
+        run: swift build
+
+      - name: Run quickstart
+        run: |
+          # Wrap the snippet in a tiny SwiftPM project that depends on
+          # the just-built SDK and runs the README block as @main.
+          cd /tmp/smoke
+          cat > Package.swift <<'PKG'
+          // swift-tools-version:5.9
+          import PackageDescription
+          let p = Package(
+              name: "smoke",
+              dependencies: [.package(path: "$GITHUB_WORKSPACE")],
+              targets: [.executableTarget(name: "smoke", dependencies: ["Pilot"])]
+          )
+          PKG
+          mkdir -p Sources/smoke
+          mv main.swift Sources/smoke/
+          swift run smoke
