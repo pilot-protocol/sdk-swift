@@ -49,8 +49,13 @@ jobs:
         run: |
           # Wrap the snippet in a tiny SwiftPM project that depends on
           # the just-built SDK and runs the README block as @main.
+          # The heredoc is UNQUOTED so the shell expands
+          # $GITHUB_WORKSPACE into the absolute path — using the
+          # quoted form `<<'PKG'` (as the original did) leaves the
+          # literal string in Package.swift and SwiftPM throws
+          # "The folder $GITHUB_WORKSPACE doesn't exist".
           cd /tmp/smoke
-          cat > Package.swift <<'PKG'
+          cat > Package.swift <<PKG
           // swift-tools-version:5.9
           import PackageDescription
           let p = Package(
