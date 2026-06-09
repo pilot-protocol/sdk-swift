@@ -14,7 +14,11 @@ permissions:
 jobs:
   analyze:
     name: Analyze
-    runs-on: ubuntu-latest
+    # Swift CodeQL extraction only runs on macOS — the GitHub-hosted
+    # ubuntu runners refuse with "Swift analysis is only supported on
+    # macOS runner images. Please migrate to a macOS runner." Stays on
+    # the same -latest tag so the runner image moves forward with us.
+    runs-on: macos-latest
     permissions:
       security-events: write
       contents: read
