@@ -26,21 +26,29 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Download the .binaryTarget XCFramework (PilotC) BEFORE CodeQL
-      # inserts its build tracer. With the tracer hooked first, swift
-      # downloads the artifact but can't see the resulting module on
-      # its search path during compilation and fails with
-      # `error: no such module 'PilotC'`. Pre-resolving outside the
-      # tracer puts the artifact on disk so the subsequent swift build
-      # is a no-op resolve + observed compile.
+      # Pre-resolve so the .binaryTarget XCFramework (PilotC) is on
+      # disk before the tracer attaches. Without this, the tracer's
+      # interposition between `swift package resolve` and the compile
+      # phase hides the freshly-downloaded module from the search
+      # path. Even so, the tracer still loses track of the XCFramework
+      # under autobuild + auto-tracing, which is why this workflow
+      # switches to build-mode: manual below.
       - name: Resolve package dependencies (pre-tracer)
-        run: swift package resolve
+        run: swift build --target Pilot -Xswiftc -emit-module || swift package resolve
 
+      # build-mode: manual tells CodeQL "do not autobuild, do not
+      # auto-insert tracing into the next compile" — instead, the
+      # database is created from the explicit build below. This is
+      # the documented escape hatch for Swift packages that have
+      # .binaryTarget deps that the autobuild/auto-trace flow can't
+      # follow.
+      # https://docs.github.com/en/code-security/code-scanning/creating-an-advanced-setup-for-code-scanning/codeql-code-scanning-for-compiled-languages
       - uses: github/codeql-action/init@v3
         with:
           languages: swift
+          build-mode: manual
 
-      - name: Build (observed by CodeQL tracer)
+      - name: Manual build (database init records this command)
         run: swift build
 
       - uses: github/codeql-action/analyze@v3
