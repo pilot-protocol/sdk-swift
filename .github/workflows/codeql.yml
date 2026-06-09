@@ -28,5 +28,14 @@ jobs:
       - uses: github/codeql-action/init@v3
         with:
           languages: swift
-      - uses: github/codeql-action/autobuild@v3
+      # CodeQL's swift autobuild invokes swiftc directly without
+      # running `swift package resolve` first, so any package with
+      # `.binaryTarget` deps (we have one — PilotC, the XCFramework)
+      # blows up with `error: no such module 'PilotC'`. Replace
+      # autobuild with the same `swift build` the ci.yml test job
+      # already runs successfully — it resolves the manifest, fetches
+      # the binary artifact, and produces an indexable build that
+      # the extractor can attach to.
+      - name: Build (resolves binaryTarget, autobuild can't)
+        run: swift build
       - uses: github/codeql-action/analyze@v3
