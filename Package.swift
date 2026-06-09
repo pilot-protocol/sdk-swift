@@ -21,7 +21,12 @@ let package = Package(
         .binaryTarget(
             name: "PilotC",
             url: "https://github.com/pilot-protocol/sdk-swift/releases/download/v0.2.0/Pilot.xcframework.zip",
-            checksum: "2a39465af3d9e77eed750b494272c690251824198f6d5b68cfa2d60f4bbc9b02a600976380d24f7911b396872fc83e8d6e748d71f176fbdb8075141447e67020"
+            // SwiftPM binaryTarget checksums are SHA-256 (64 hex chars).
+            // The previous value was 128 hex (a SHA-512), which SwiftPM
+            // accepted at parse time but rejected at fetch:
+            // "checksum of downloaded artifact … does not match …".
+            // Recomputed via `swift package compute-checksum`.
+            checksum: "a59c9b99061d1078cc6f5e7ae1261af90144e2177cdb1b932fbcf3979578a25e"
         ),
         .testTarget(
             name: "PilotTests",

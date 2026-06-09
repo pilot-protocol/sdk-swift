@@ -24,11 +24,21 @@ jobs:
 
       - name: Extract README quickstart
         run: |
-          # PILOT-197: extract the first ```swift fenced block.
+          # PILOT-197: extract the ```swift fenced block under the
+          # `## Quick start` heading. The README has multiple ```swift
+          # blocks (the install-instructions Package.swift snippet
+          # being the first); concatenating them with a naive `awk`
+          # produced invalid code that swiftc couldn't compile.
           mkdir -p /tmp/smoke
-          awk '/^```swift$/{flag=1;next}/^```$/{flag=0}flag' README.md > /tmp/smoke/main.swift
+          awk '
+            /^## Quick start/    { in_section = 1; next }
+            in_section && /^## / { in_section = 0; next }
+            in_section && /^```swift$/ { flag = 1; next }
+            in_section && flag && /^```$/ { flag = 0; exit }
+            in_section && flag
+          ' README.md > /tmp/smoke/main.swift
           if [ ! -s /tmp/smoke/main.swift ]; then
-            echo "::error::no quickstart code block found in README.md"
+            echo "::error::no quickstart code block found under '## Quick start' in README.md"
             exit 1
           fi
 
