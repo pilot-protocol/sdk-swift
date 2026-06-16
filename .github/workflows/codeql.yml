@@ -48,7 +48,28 @@ jobs:
           languages: swift
           build-mode: manual
 
+      # The CodeQL tracer wraps `swift build` and forces a clean recompile
+      # so it can observe the Swift frontend invocation. SwiftPM normally
+      # injects the .binaryTarget's modulemap directory into the compile's
+      # header search path via its internal build plan, but that injection
+      # does NOT survive the tracer's re-invocation of the compiler — hence
+      # `no such module 'PilotC'` under the tracer even though a plain
+      # `swift build` (and the pre-resolve above) succeed.
+      #
+      # Fix: make the traced build self-contained. Resolve already unzipped
+      # the XCFramework under .build/artifacts/. Locate the macOS slice's
+      # Headers dir (it carries PilotC's module.modulemap) and pass it
+      # explicitly with `-Xswiftc -I`, so the module resolves regardless of
+      # how the tracer re-spawns the compiler.
       - name: Manual build (database init records this command)
-        run: swift build
+        run: |
+          PILOTC_HEADERS="$(find .build/artifacts -type d -name Headers -path '*macos*' -path '*PilotC*' | head -1)"
+          if [ -z "$PILOTC_HEADERS" ]; then
+            echo "::error::Could not locate PilotC XCFramework macOS Headers dir under .build/artifacts" >&2
+            find .build/artifacts -maxdepth 5 -type d || true
+            exit 1
+          fi
+          echo "PilotC headers (modulemap) dir: $PILOTC_HEADERS"
+          swift build -Xswiftc -I -Xswiftc "$PILOTC_HEADERS"
 
       - uses: github/codeql-action/analyze@v3
