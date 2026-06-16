@@ -42,12 +42,14 @@ Requires iOS 14+ or macOS 12+, Swift 5.9+.
 ## Quick start
 
 ```swift
+import Foundation
 import Pilot
 
 let dataDir = FileManager.default
     .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
     .appendingPathComponent("pilot")
 
+// Start the embedded daemon (no separate process needed).
 let pilot = try Pilot.start(.init(
     dataDir: dataDir,
     socketPath: "p.sock",
@@ -57,15 +59,23 @@ let pilot = try Pilot.start(.init(
 
 print("address=\(pilot.start.address) node_id=\(pilot.start.nodeID)")
 
-try pilot.handshake(peerID: 12345, justification: "hello")
-_ = try pilot.waitForTrust(peerID: 12345, timeoutMs: 30_000)
-try pilot.send(to: "0:0000.0000.AAAA", port: 7777, data: Data("hi".utf8))
+// Confirm the node is up.
+let health = try pilot.health()
+print("status=\(health["status"] ?? "unknown")")
 
-Task {
-    while let dg = try? pilot.receive() {
-        print("got \(dg.data.count) bytes from \(dg.srcAddr):\(dg.srcPort)")
-    }
-}
+// To talk to a peer, handshake first, then send once trusted:
+//
+//   try pilot.handshake(peerID: 12345, justification: "hello")
+//   _ = try pilot.waitForTrust(peerID: 12345, timeoutMs: 30_000)
+//   try pilot.send(to: "0:0000.0000.AAAA", port: 7777, data: Data("hi".utf8))
+//
+// And drain inbound datagrams on a background task:
+//
+//   Task {
+//       while let dg = try? pilot.receive() {
+//           print("got \(dg.data.count) bytes from \(dg.srcAddr):\(dg.srcPort)")
+//       }
+//   }
 
 // On shutdown
 try pilot.stop()

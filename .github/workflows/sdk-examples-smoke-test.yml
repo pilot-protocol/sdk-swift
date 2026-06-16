@@ -60,8 +60,15 @@ jobs:
           import PackageDescription
           let p = Package(
               name: "smoke",
+              // Pilot's library requires macOS 12; the consuming
+              // executable must declare at least the same floor or
+              // SwiftPM refuses to resolve the dependency.
+              platforms: [.macOS(.v12)],
               dependencies: [.package(path: "$GITHUB_WORKSPACE")],
-              targets: [.executableTarget(name: "smoke", dependencies: ["Pilot"])]
+              // The dependency package's identity is its directory name
+              // ("sdk-swift"), not its manifest name ("Pilot"), so the
+              // product must be referenced with an explicit package:.
+              targets: [.executableTarget(name: "smoke", dependencies: [.product(name: "Pilot", package: "sdk-swift")])]
           )
           PKG
           mkdir -p Sources/smoke
