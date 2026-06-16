@@ -14,15 +14,62 @@ permissions:
 jobs:
   analyze:
     name: Analyze
-    runs-on: ubuntu-latest
+    # Swift CodeQL extraction only runs on macOS — the GitHub-hosted
+    # ubuntu runners refuse with "Swift analysis is only supported on
+    # macOS runner images. Please migrate to a macOS runner." Stays on
+    # the same -latest tag so the runner image moves forward with us.
+    runs-on: macos-latest
     permissions:
       security-events: write
       contents: read
 
     steps:
       - uses: actions/checkout@v4
+
+      # Pre-resolve so the .binaryTarget XCFramework (PilotC) is on
+      # disk before the tracer attaches. Without this, the tracer's
+      # interposition between `swift package resolve` and the compile
+      # phase hides the freshly-downloaded module from the search
+      # path. Even so, the tracer still loses track of the XCFramework
+      # under autobuild + auto-tracing, which is why this workflow
+      # switches to build-mode: manual below.
+      - name: Resolve package dependencies (pre-tracer)
+        run: swift build --target Pilot -Xswiftc -emit-module || swift package resolve
+
+      # build-mode: manual tells CodeQL "do not autobuild, do not
+      # auto-insert tracing into the next compile" — instead, the
+      # database is created from the explicit build below. This is
+      # the documented escape hatch for Swift packages that have
+      # .binaryTarget deps that the autobuild/auto-trace flow can't
+      # follow.
+      # https://docs.github.com/en/code-security/code-scanning/creating-an-advanced-setup-for-code-scanning/codeql-code-scanning-for-compiled-languages
       - uses: github/codeql-action/init@v3
         with:
           languages: swift
-      - uses: github/codeql-action/autobuild@v3
+          build-mode: manual
+
+      # The CodeQL tracer wraps `swift build` and forces a clean recompile
+      # so it can observe the Swift frontend invocation. SwiftPM normally
+      # injects the .binaryTarget's modulemap directory into the compile's
+      # header search path via its internal build plan, but that injection
+      # does NOT survive the tracer's re-invocation of the compiler — hence
+      # `no such module 'PilotC'` under the tracer even though a plain
+      # `swift build` (and the pre-resolve above) succeed.
+      #
+      # Fix: make the traced build self-contained. Resolve already unzipped
+      # the XCFramework under .build/artifacts/. Locate the macOS slice's
+      # Headers dir (it carries PilotC's module.modulemap) and pass it
+      # explicitly with `-Xswiftc -I`, so the module resolves regardless of
+      # how the tracer re-spawns the compiler.
+      - name: Manual build (database init records this command)
+        run: |
+          PILOTC_HEADERS="$(find .build/artifacts -type d -name Headers -path '*macos*' -path '*PilotC*' | head -1)"
+          if [ -z "$PILOTC_HEADERS" ]; then
+            echo "::error::Could not locate PilotC XCFramework macOS Headers dir under .build/artifacts" >&2
+            find .build/artifacts -maxdepth 5 -type d || true
+            exit 1
+          fi
+          echo "PilotC headers (modulemap) dir: $PILOTC_HEADERS"
+          swift build -Xswiftc -I -Xswiftc "$PILOTC_HEADERS"
+
       - uses: github/codeql-action/analyze@v3
