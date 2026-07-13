@@ -1,0 +1,190 @@
+name: publish
+
+# Release/publish workflow for the Swift SDK.
+#
+# Triggered by release-watch.yml (same-repo workflow_dispatch) when the upstream
+# daemon (pilot-protocol/pilotprotocol) cuts a version newer than the latest
+# sdk-swift release, or manually via workflow_dispatch with a `version` input.
+#
+# What it does, version-locked to the daemon release:
+#   1. Builds Pilot.xcframework from the pilot-protocol/libpilot cgo bindings on
+#      a macOS runner (iOS device + iOS simulator + macOS arm64 slices), with
+#      libpilot pinned to the requested pilotprotocol version so the SDK surface
+#      matches the daemon.
+#   2. Zips it and computes its SHA-256 (the checksum SwiftPM verifies).
+#   3. Rewrites Package.swift's binaryTarget url + checksum to the new tag.
+#   4. Commits that change, tags vX.Y.Z on the commit, pushes the TAG (tags are
+#      not branch-protected, so the built-in token can push them), best-effort
+#      fast-forwards main, and creates the GitHub Release with the xcframework
+#      attached.
+#
+# Idempotent: if the release for the version already exists, the build still
+# runs (proving the toolchain), but the mutating tag/commit/release steps are
+# skipped.
+#
+# Token: NONE new. The daemon + libpilot repos are public; the tag push and
+# release creation are same-repo (built-in GITHUB_TOKEN with contents: write).
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to publish (with or without leading v, e.g. 1.12.5)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
+env:
+  LIBPILOT_REPO_SLUG: pilot-protocol/libpilot
+  UPSTREAM_REPO: pilot-protocol/pilotprotocol
+
+jobs:
+  publish:
+    runs-on: macos-latest   # macos-13 is retired; macos-latest gives a current Xcode
+    steps:
+      - name: Normalize version
+        id: v
+        run: |
+          set -euo pipefail
+          RAW="${{ inputs.version }}"
+          if [ -z "$RAW" ]; then
+            echo "::error::no version supplied"
+            exit 1
+          fi
+          BARE="${RAW#v}"
+          echo "version=$BARE" >> "$GITHUB_OUTPUT"
+          echo "tag=v$BARE"    >> "$GITHUB_OUTPUT"
+          echo "version=$BARE tag=v$BARE"
+
+      - name: Checkout sdk-swift
+        uses: actions/checkout@v4
+        with:
+          path: sdk-swift
+          fetch-depth: 0
+
+      - name: Checkout libpilot
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.LIBPILOT_REPO_SLUG }}
+          path: libpilot
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: libpilot/go.mod
+
+      - name: Does this release already exist?
+        id: exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh release view "${{ steps.v.outputs.tag }}" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::release ${{ steps.v.outputs.tag }} already exists — will build for verification but skip mutating steps"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Pin libpilot to the requested daemon version
+        run: |
+          set -euo pipefail
+          cd libpilot
+          # Version-lock the SDK surface to the requested daemon release.
+          go get "github.com/pilot-protocol/pilotprotocol@${{ steps.v.outputs.tag }}"
+          go mod tidy
+          echo "libpilot now pins:"
+          go list -m github.com/pilot-protocol/pilotprotocol
+
+      - name: Build Pilot.xcframework
+        env:
+          LIBPILOT_REPO: ${{ github.workspace }}/libpilot
+        run: |
+          set -euo pipefail
+          bash sdk-swift/scripts/build-xcframework.sh
+          test -d sdk-swift/Frameworks/Pilot.xcframework
+
+      - name: Package + checksum
+        id: pkg
+        run: |
+          set -euo pipefail
+          cd sdk-swift/Frameworks
+          ditto -c -k --keepParent Pilot.xcframework Pilot.xcframework.zip
+          SUM=$(shasum -a 256 Pilot.xcframework.zip | awk '{print $1}')
+          echo "checksum=$SUM" >> "$GITHUB_OUTPUT"
+          echo "sha256=$SUM"
+          ls -lh Pilot.xcframework.zip
+
+      - name: Verification-only summary (release already exists)
+        if: steps.exists.outputs.exists == 'true'
+        run: |
+          {
+            echo "## Swift SDK publish (verification only)"
+            echo "- Version: \`${{ steps.v.outputs.version }}\`"
+            echo "- Release \`${{ steps.v.outputs.tag }}\` already exists — mutating steps skipped."
+            echo "- Freshly built xcframework sha256: \`${{ steps.pkg.outputs.checksum }}\`"
+            echo "  (native build is non-reproducible; the published release keeps its original asset/checksum.)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Rewrite Package.swift (url + checksum)
+        if: steps.exists.outputs.exists == 'false'
+        run: |
+          set -euo pipefail
+          cd sdk-swift
+          TAG="${{ steps.v.outputs.tag }}"
+          SUM="${{ steps.pkg.outputs.checksum }}"
+          # binaryTarget url -> new tag's release asset
+          sed -i '' -E "s#(releases/download/)v[^/]+(/Pilot\.xcframework\.zip)#\1${TAG}\2#" Package.swift
+          # binaryTarget checksum -> freshly computed sha256
+          sed -i '' -E "s#(checksum:[[:space:]]*\")[0-9a-f]{64}(\")#\1${SUM}\2#" Package.swift
+          echo "----- Package.swift binaryTarget -----"
+          grep -nE 'releases/download|checksum:' Package.swift
+
+      - name: Commit, tag, push, release
+        if: steps.exists.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cd sdk-swift
+          TAG="${{ steps.v.outputs.tag }}"
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Package.swift
+          git commit -m "Release ${TAG}: pin PilotC xcframework to ${TAG}"
+          # Tag the release commit. Tags are not branch-protected, so the
+          # built-in token can push them even when main restricts direct pushes.
+          git tag -a "${TAG}" -m "sdk-swift ${TAG}"
+          git push origin "${TAG}"
+          # Best-effort: fast-forward main so the branch manifest tracks the tag.
+          # If branch protection rejects the bot push, the tag still carries the
+          # correct manifest for SwiftPM consumers — LOUD warning, non-blocking.
+          if git push origin "HEAD:${{ github.ref_name }}"; then
+            echo "Fast-forwarded ${{ github.ref_name }} to ${TAG}"
+          else
+            echo "::warning::could not fast-forward ${{ github.ref_name }} (branch protection); tag ${TAG} carries the manifest and the release is authoritative for consumers"
+          fi
+          # Create the release with the xcframework attached.
+          gh release create "${TAG}" \
+            Frameworks/Pilot.xcframework.zip \
+            --repo "${{ github.repository }}" \
+            --title "${TAG}" \
+            --notes "Automated release: Pilot.xcframework built version-locked to pilotprotocol ${TAG}. Consume via SwiftPM: .package(url: \"https://github.com/${{ github.repository }}.git\", from: \"${{ steps.v.outputs.version }}\")"
+          echo "Published ${TAG}"
+
+      - name: Publish summary
+        if: steps.exists.outputs.exists == 'false'
+        run: |
+          {
+            echo "## Swift SDK publish"
+            echo "- Version: \`${{ steps.v.outputs.version }}\`"
+            echo "- Tag/Release: \`${{ steps.v.outputs.tag }}\`"
+            echo "- xcframework sha256: \`${{ steps.pkg.outputs.checksum }}\`"
+            echo "- Install: \`.package(url: \"https://github.com/${{ github.repository }}.git\", from: \"${{ steps.v.outputs.version }}\")\`"
+          } >> "$GITHUB_STEP_SUMMARY"
