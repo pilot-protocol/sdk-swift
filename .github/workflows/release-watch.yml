@@ -1,0 +1,114 @@
+name: release-watch
+
+# Self-polling release watcher for the Swift SDK.
+#
+# Polls the PUBLIC latest release of pilot-protocol/pilotprotocol every 30
+# minutes (and on manual dispatch). If the upstream daemon version is newer
+# than the latest sdk-swift GitHub Release, it triggers THIS repo's publish.yml
+# at that version via a same-repo workflow_dispatch.
+#
+# Unlike the npm/PyPI SDKs, SwiftPM has no package registry: a "published"
+# Swift version IS a git tag + GitHub Release carrying the Pilot.xcframework.zip
+# binary asset. So the "currently published" version is read from this repo's
+# own latest release, and publish.yml both builds the xcframework and cuts the
+# tag/release.
+#
+# Token: NONE new.
+#   - Reading the upstream release is public (no auth).
+#   - Reading this repo's own latest release is same-repo (built-in token).
+#   - Dispatching publish.yml is same-repo (built-in GITHUB_TOKEN is enough).
+#   - publish.yml is idempotent (skips if the release already exists), so a
+#     redundant trigger is harmless.
+#
+# Poll lag is ~30 min; workflow_dispatch is the instant manual path.
+
+on:
+  schedule:
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write   # required to dispatch publish.yml in this same repo
+
+concurrency:
+  group: release-watch
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_REPO: pilot-protocol/pilotprotocol
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve latest upstream version
+        id: latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG=$(gh release view --repo "$UPSTREAM_REPO" --json tagName --jq '.tagName')
+          if [ -z "$TAG" ] || [ "$TAG" = "null" ]; then
+            echo "::error::could not resolve latest release tag for $UPSTREAM_REPO"
+            exit 1
+          fi
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+          echo "Upstream latest: ${TAG#v}"
+
+      - name: Resolve latest published sdk-swift version
+        id: published
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # This repo's own latest release. May be empty if none exist yet.
+          TAG=$(gh release view --repo "${{ github.repository }}" --json tagName --jq '.tagName' 2>/dev/null || echo "")
+          PUB="${TAG#v}"
+          echo "version=$PUB" >> "$GITHUB_OUTPUT"
+          echo "Published sdk-swift: ${PUB:-<none>}"
+
+      - name: Decide whether to publish
+        id: decide
+        run: |
+          set -euo pipefail
+          LATEST="${{ steps.latest.outputs.version }}"
+          PUB="${{ steps.published.outputs.version }}"
+          if [ "$LATEST" = "$PUB" ]; then
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "sdk-swift already at $LATEST — nothing to do."
+            exit 0
+          fi
+          # Publish only when upstream is the strictly higher version.
+          # `sort -V` puts the larger version last.
+          HIGHEST=$(printf '%s\n%s\n' "$LATEST" "$PUB" | sort -V | tail -1)
+          if [ "$HIGHEST" = "$LATEST" ]; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+            echo "Upstream $LATEST > sdk-swift ${PUB:-<none>} — will dispatch publish."
+          else
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "sdk-swift $PUB is ahead of upstream $LATEST — nothing to do."
+          fi
+
+      - name: Dispatch publish.yml
+        if: steps.decide.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh workflow run publish.yml \
+            --ref "${{ github.ref_name }}" \
+            -f version="${{ steps.latest.outputs.version }}"
+          echo "Dispatched publish.yml @ ${{ steps.latest.outputs.version }}"
+
+      - name: Summary
+        run: |
+          {
+            echo "## Swift release watch"
+            echo "- Upstream latest: \`${{ steps.latest.outputs.version }}\`"
+            echo "- Published sdk-swift: \`${{ steps.published.outputs.version }}\`"
+            echo "- Dispatched publish: \`${{ steps.decide.outputs.publish }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
