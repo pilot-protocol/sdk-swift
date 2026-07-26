@@ -75,6 +75,8 @@ final class IntegrationTests: XCTestCase {
                 break                                 // expected
             case .rpcFailed(let m):
                 XCTFail("unexpected rpcFailed: \(m)")
+            case .dataTooLarge(let n):
+                XCTFail("unexpected dataTooLarge(\(n)) on the start path")
             }
         }
     }

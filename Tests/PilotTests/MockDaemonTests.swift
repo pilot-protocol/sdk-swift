@@ -8,22 +8,15 @@
 // PilotC bindings end-to-end without booting the embedded Go
 // daemon (which requires a real registry + beacon).
 //
-// Why we don't drive the full `Pilot.*` wrapper:
+// Most tests here drive the underlying PilotC C symbols directly:
+// `Pilot.start(_:)` boots the embedded Go daemon, which the mock
+// does not implement. That protects the FFI boundary — every
+// command code the wrapper sends, the mock replies to, and the
+// JSON contract holds.
 //
-//   `Pilot.start(_:)` is the only public constructor and it
-//   unconditionally calls `PilotEmbeddedStart`, which spins up a
-//   real daemon that dials a registry. The mock daemon only
-//   implements the local IPC socket, not the registry protocol —
-//   so there is no way to drive `Pilot.info() / health() / send()`
-//   end-to-end against the mock without modifying Pilot.swift
-//   (which the task explicitly forbids).
-//
-//   The next-best thing — and what this file does — is to drive
-//   the underlying PilotC C symbols directly against the mock. This
-//   does NOT bump line coverage on Sources/Pilot/Pilot.swift (the
-//   wrapper methods are bypassed) but it DOES protect the FFI
-//   boundary: every command code the wrapper sends, the mock
-//   replies to, and the JSON contract holds.
+// The wrapper methods themselves are covered by attaching a `Pilot`
+// to the already-open driver handle via `Pilot.attach`, which skips
+// the embedded boot. See `testWrapperSendReceiveRoundtrip`.
 //
 // Tests skip cleanly if `go` is not on PATH or the mock daemon
 // source tree cannot be located.
@@ -140,6 +133,12 @@ final class MockDaemonTests: XCTestCase {
         build.executableURL = URL(fileURLWithPath: goPath)
         build.arguments = ["build", "-o", outPath, "."]
         build.currentDirectoryURL = URL(fileURLWithPath: src)
+        // mockdaemon is its own module. A go.work higher up the tree that
+        // lists libpilot but not this nested module makes `go build` resolve
+        // against the workspace and fail; GOWORK=off keeps it module-local.
+        var env = ProcessInfo.processInfo.environment
+        env["GOWORK"] = "off"
+        build.environment = env
         let buildErr = Pipe()
         build.standardError = buildErr
         try build.run()
@@ -412,6 +411,52 @@ final class MockDaemonTests: XCTestCase {
     /// same Foundation base64 path Pilot.receive() uses to decode the
     /// JSON-wrapped data field — proving the format compatibility holds
     /// regardless of whether the bytes came from a real or mock daemon.
+    /// Drives the public wrapper methods — `send()` then `receive()` — over
+    /// the mock's SendTo→RecvFrom loopback. Unlike the C-symbol tests above,
+    /// this executes Pilot.swift's own address formatting, size guard, RPC
+    /// error unwrapping and datagram decoding.
+    func testWrapperSendReceiveRoundtrip() throws {
+        let p = attachWrapper()
+        let payload = Data([0x01, 0x02, 0xFF, 0x00, 0xAB])
+        try p.send(to: "0:0000.0000.BEEF", port: 7, data: payload)
+
+        // receive() blocks on the driver's datagram channel; bound the wait
+        // so a mock regression fails the test instead of hanging the suite.
+        let got = expectation(description: "receive")
+        var received: Pilot.Datagram?
+        var failure: Swift.Error?
+        DispatchQueue.global().async {
+            do { received = try p.receive() } catch { failure = error }
+            got.fulfill()
+        }
+        wait(for: [got], timeout: 10)
+
+        if let failure { throw failure }
+        let dg = try XCTUnwrap(received)
+        XCTAssertEqual(dg.data, payload)
+        XCTAssertEqual(dg.srcPort, 0xDEAD)   // canned by the mock's loopback
+        XCTAssertEqual(dg.dstPort, 7)
+        XCTAssertFalse(dg.srcAddr.isEmpty)
+    }
+
+    /// Empty payloads short-circuit before the C call, so nothing is
+    /// reflected and a follow-up send is what actually reaches the mock.
+    func testWrapperSendIgnoresEmptyPayload() throws {
+        let p = attachWrapper()
+        XCTAssertNoThrow(try p.send(to: "0:0000.0000.BEEF", port: 7, data: Data()))
+    }
+
+    /// Hand the open driver handle to a `Pilot` instance and clear our own
+    /// copy, so the wrapper's `stop()`/`deinit` is the only closer.
+    private func attachWrapper() -> Pilot {
+        let p = Pilot.attach(
+            driverHandle: driverHandle,
+            start: Pilot.StartResult(
+                address: "0:0000.0000.AAAA", nodeID: 0x12345678, publicKey: "mock"))
+        driverHandle = 0
+        return p
+    }
+
     func testEchoPayloadBase64ContractMatchesWrapper() throws {
         let raw = Data([0x01, 0x02, 0xFF, 0x00, 0xAB])
         let b64 = raw.base64EncodedString()

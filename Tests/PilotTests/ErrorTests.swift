@@ -21,6 +21,13 @@ final class ErrorTests: XCTestCase {
         XCTAssertEqual(e.description, "Pilot invalid response: not a JSON object: ...")
     }
 
+    func testDataTooLargeDescription() {
+        let e = Pilot.Error.dataTooLarge(2_147_483_648)
+        XCTAssertEqual(
+            e.description,
+            "Pilot send: data 2147483648 bytes exceeds Int32.max (C ABI limit)")
+    }
+
     func testEmptyMessageStillRenders() {
         XCTAssertEqual(Pilot.Error.startFailed("").description,     "Pilot start failed: ")
         XCTAssertEqual(Pilot.Error.rpcFailed("").description,       "Pilot RPC failed: ")
@@ -32,8 +39,9 @@ final class ErrorTests: XCTestCase {
             Pilot.Error.startFailed("a"),
             Pilot.Error.rpcFailed("b"),
             Pilot.Error.invalidResponse("c"),
+            Pilot.Error.dataTooLarge(1),
         ]
-        XCTAssertEqual(errs.count, 3)
+        XCTAssertEqual(errs.count, 4)
         for err in errs {
             // localizedDescription always works on Swift errors; this just
             // proves the conformance compiles and the value can be thrown.
@@ -81,8 +89,7 @@ final class ErrorTests: XCTestCase {
         let a = Pilot.Error.startFailed("x").description
         let b = Pilot.Error.rpcFailed("x").description
         let c = Pilot.Error.invalidResponse("x").description
-        XCTAssertNotEqual(a, b)
-        XCTAssertNotEqual(b, c)
-        XCTAssertNotEqual(a, c)
+        let d = Pilot.Error.dataTooLarge(1).description
+        XCTAssertEqual(Set([a, b, c, d]).count, 4)
     }
 }
