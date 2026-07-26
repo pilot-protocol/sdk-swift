@@ -95,9 +95,21 @@ public final class Pilot {
         set { stoppedLock.lock(); defer { stoppedLock.unlock() }; _stopped = newValue }
     }
 
-    private init(start: StartResult, driverHandle: UInt64) {
+    /// True when this instance booted the process-global embedded daemon and
+    /// is therefore responsible for stopping it in `stop()`.
+    private let ownsEmbeddedDaemon: Bool
+
+    private init(start: StartResult, driverHandle: UInt64, ownsEmbeddedDaemon: Bool = true) {
         self.start = start
         self.driverHandle = driverHandle
+        self.ownsEmbeddedDaemon = ownsEmbeddedDaemon
+    }
+
+    /// Wrap an already-open driver connection (from `PilotConnect`) without
+    /// booting the embedded daemon. `stop()` closes only the driver handle;
+    /// the caller keeps ownership of whatever is serving the socket.
+    internal static func attach(driverHandle: UInt64, start: StartResult) -> Pilot {
+        Pilot(start: start, driverHandle: driverHandle, ownsEmbeddedDaemon: false)
     }
 
     deinit { if !stopped { try? stop() } }
@@ -154,6 +166,7 @@ public final class Pilot {
         guard !stopped else { return }
         stopped = true
         _ = PilotClose(driverHandle)
+        guard ownsEmbeddedDaemon else { return }
         let resp = try parseJSON(PilotEmbeddedStop())
         if let err = resp["error"] as? String { throw Error.rpcFailed(err) }
     }
@@ -207,18 +220,22 @@ public final class Pilot {
     }
 
     public func receive() throws -> Datagram {
-        let resp = try rpc(PilotRecvFrom(driverHandle))
+        try Pilot.decodeDatagram(try rpc(PilotRecvFrom(driverHandle)))
+    }
+
+    /// Build a `Datagram` from a decoded RecvFrom response body.
+    /// Split out of `receive()` so the decode contract can be driven
+    /// with response shapes the wire format cannot produce.
+    internal static func decodeDatagram(_ resp: [String: Any]) throws -> Datagram {
         guard
             let src      = resp["src_addr"] as? String,
             let sportNum = resp["src_port"] as? NSNumber,
             let dportNum = resp["dst_port"] as? NSNumber,
-            sportNum.uint16Value == sportNum.uint64Value,
-            dportNum.uint16Value == dportNum.uint64Value
+            let sport    = port(from: sportNum),
+            let dport    = port(from: dportNum)
         else {
             throw Error.invalidResponse("recv: \(resp)")
         }
-        let sport = sportNum.uint16Value
-        let dport = dportNum.uint16Value
         // Go's encoding/json renders []byte as base64.
         let data: Data
         if let b64 = resp["data"] as? String, let d = Data(base64Encoded: b64) {
@@ -229,6 +246,16 @@ public final class Pilot {
             data = Data()
         }
         return Datagram(srcAddr: src, srcPort: sport, dstPort: dport, data: data)
+    }
+
+    /// Narrow an `NSNumber` to `UInt16` only when the value is exactly
+    /// representable in 16 bits. `NSNumber.uint16Value` wraps silently —
+    /// 70000 reads back as 4464 and -1 as 65535 — so compare in a single
+    /// wide signed type first and reject anything out of range.
+    private static func port(from n: NSNumber) -> UInt16? {
+        let wide = n.int64Value
+        guard wide >= 0, wide <= Int64(UInt16.max) else { return nil }
+        return UInt16(wide)
     }
 
     public func trustedPeers() throws -> [[String: Any]] {

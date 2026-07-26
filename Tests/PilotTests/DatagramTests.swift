@@ -69,28 +69,76 @@ final class DatagramTests: XCTestCase {
         XCTAssertEqual(d.count, 4)
         XCTAssertEqual(d, Data([0xDE, 0xAD, 0xBE, 0xEF]))
     }
-}
 
-    // MARK: - Port truncation validation (PILOT-119)
+    // MARK: - Port range validation (PILOT-119)
 
-    func testPortTruncationDetection() {
-        // uint16Value truncates values > 65535 silently.
-        // A value of 70000 truncates to 4464 (70000 - 65536).
-        // The receive() path must reject such values.
-        let n70000 = NSNumber(value: 70000)
-        XCTAssertNotEqual(n70000.uint16Value, n70000.uint64Value,
-                          "70000 should be detected as truncated")
-
-        let n65535 = NSNumber(value: 65535)
-        XCTAssertEqual(n65535.uint16Value, n65535.uint64Value,
-                       "65535 is max valid port, should not truncate")
-
-        let n0 = NSNumber(value: 0)
-        XCTAssertEqual(n0.uint16Value, n0.uint64Value,
-                       "port 0 is valid, should not truncate")
-
-        let nNegative = NSNumber(value: -1)
-        // intValue == -1, uint64Value would wrap around for negative
-        XCTAssertNotEqual(Int64(nNegative.intValue), Int64(bitPattern: nNegative.uint64Value),
-                          "negative values should be distinguishable from valid ports")
+    /// Response body in the shape `receive()` hands to the decoder.
+    private func recvBody(srcPort: Any, dstPort: Any) -> [String: Any] {
+        [
+            "src_addr": "0:0000.0000.AAAA",
+            "src_port": srcPort,
+            "dst_port": dstPort,
+            "data":     Data("payload".utf8).base64EncodedString(),
+        ]
     }
+
+    func testPortTruncationDetection() throws {
+        // NSNumber.uint16Value wraps: 70000 reads back as 4464, and -1 as
+        // 65535. Both must be rejected rather than silently narrowed.
+        XCTAssertEqual(NSNumber(value: 70000).uint16Value, 4464)
+        XCTAssertEqual(NSNumber(value: -1).uint16Value, UInt16.max)
+
+        for badPort in [70000, 65536, 4_294_967_295, -1] {
+            let body = recvBody(srcPort: NSNumber(value: badPort), dstPort: 7)
+            XCTAssertThrowsError(try Pilot.decodeDatagram(body),
+                                 "src_port \(badPort) should be rejected") { err in
+                guard case Pilot.Error.invalidResponse = err else {
+                    return XCTFail("wrong case for \(badPort): \(err)")
+                }
+            }
+
+            let body2 = recvBody(srcPort: 7, dstPort: NSNumber(value: badPort))
+            XCTAssertThrowsError(try Pilot.decodeDatagram(body2),
+                                 "dst_port \(badPort) should be rejected") { err in
+                guard case Pilot.Error.invalidResponse = err else {
+                    return XCTFail("wrong case for \(badPort): \(err)")
+                }
+            }
+        }
+
+        // Both ends of the valid range survive the round-trip intact.
+        for goodPort in [0, 1, 7, 65535] {
+            let dg = try Pilot.decodeDatagram(
+                recvBody(srcPort: NSNumber(value: goodPort), dstPort: NSNumber(value: goodPort)))
+            XCTAssertEqual(dg.srcPort, UInt16(goodPort))
+            XCTAssertEqual(dg.dstPort, UInt16(goodPort))
+            XCTAssertEqual(dg.srcAddr, "0:0000.0000.AAAA")
+            XCTAssertEqual(dg.data, Data("payload".utf8))
+        }
+    }
+
+    func testDecodeRejectsMissingAndMistypedFields() {
+        let cases: [[String: Any]] = [
+            ["src_port": 1, "dst_port": 2],                                 // no src_addr
+            ["src_addr": "0:0.0.0", "dst_port": 2],                         // no src_port
+            ["src_addr": "0:0.0.0", "src_port": 1],                         // no dst_port
+            ["src_addr": 42, "src_port": 1, "dst_port": 2],                 // src_addr not a string
+            ["src_addr": "0:0.0.0", "src_port": "1", "dst_port": 2],        // src_port not a number
+        ]
+        for body in cases {
+            XCTAssertThrowsError(try Pilot.decodeDatagram(body), "should reject \(body)")
+        }
+    }
+
+    func testDecodeFallsBackToRawByteArrayAndEmptyData() throws {
+        var body = recvBody(srcPort: 1, dstPort: 2)
+        body["data"] = [UInt8]([0xDE, 0xAD])
+        XCTAssertEqual(try Pilot.decodeDatagram(body).data, Data([0xDE, 0xAD]))
+
+        body["data"] = NSNull()
+        XCTAssertEqual(try Pilot.decodeDatagram(body).data, Data())
+
+        body.removeValue(forKey: "data")
+        XCTAssertEqual(try Pilot.decodeDatagram(body).data, Data())
+    }
+}

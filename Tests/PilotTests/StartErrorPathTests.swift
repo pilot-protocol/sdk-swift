@@ -86,6 +86,8 @@ final class StartErrorPathTests: XCTestCase {
                 break // expected
             case .rpcFailed(let m):
                 XCTFail("unexpected rpcFailed: \(m)")
+            case .dataTooLarge(let n):
+                XCTFail("unexpected dataTooLarge(\(n)) on the start path")
             }
         }
     }
@@ -141,6 +143,8 @@ final class StartErrorPathTests: XCTestCase {
                 XCTAssertFalse(msg.isEmpty, "empty invalidResponse message")
             case .rpcFailed:
                 XCTFail("unexpected rpcFailed before start completed")
+            case .dataTooLarge(let n):
+                XCTFail("unexpected dataTooLarge(\(n)) before start completed")
             }
         } catch {
             XCTFail("wrong error type: \(error)")
