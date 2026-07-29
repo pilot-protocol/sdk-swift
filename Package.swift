@@ -20,13 +20,13 @@ let package = Package(
         ),
         .binaryTarget(
             name: "PilotC",
-            url: "https://github.com/pilot-protocol/sdk-swift/releases/download/v1.12.5/Pilot.xcframework.zip",
+            url: "https://github.com/pilot-protocol/sdk-swift/releases/download/v1.13.8/Pilot.xcframework.zip",
             // SwiftPM binaryTarget checksums are SHA-256 (64 hex chars),
             // computed via `swift package compute-checksum Pilot.xcframework.zip`.
             // This and the url above are rewritten automatically by
             // .github/workflows/publish.yml on every daemon release so the
             // SDK stays version-locked to pilot-protocol/pilotprotocol.
-            checksum: "b59149efe9a0cb8ac8008f6d15b46801714348823697b7d85b66f4816a82a6ff"
+            checksum: "c8ee63f078b6b3d11792c4ce738b3b3d865ac4bd94d9e3858655744f598444f1"
         ),
         .testTarget(
             name: "PilotTests",
